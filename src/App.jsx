@@ -2,31 +2,31 @@ import React, { useEffect, useRef, useState } from 'react';
 import DicomViewer from './components/DicomViewer';
 import { createHandLandmarker, predictWebcam } from './utils/mediaPipeHelper';
 
-
+// === THE PATIENT DATABASE ===
 const PATIENT_DATABASE = [
   {
     id: "P-001",
     name: "Case A: Suspected Meningioma",
     file: "tumor-1.jpg", 
     hasTumor: true,
-    tumorBox: { x: 32.9, y: 41.7, width: 15.5, height: 15.0 },
+    tumorBox: { x: 55, y:20, width: 20, height: 20 }, 
     confidence: "94.2%"
   },
   {
     id: "P-002",
     name: "Case B: Frontal Lobe Mass",
     file: "tumor-2.jpg",
-    hasTumor: false,
-    tumorBox: { x: 22.2, y: 28.2, width: 27.3, height: 30.0 },
-    confidence: "N/A"
+    hasTumor: true,
+    tumorBox: { x: 30, y: 20, width: 20, height: 20 },
+    confidence: "89.7%"
   },
   {
     id: "P-003",
     name: "Case C: Routine Scan (Healthy)",
     file: "healthy.jpg",
-    hasTumor: true,
-    tumorBox: { x: 50.0, y: 49.9, width: 0.0, height: 0.0 },
-    confidence: "89.7%"
+    hasTumor: false,
+    tumorBox: null,
+    confidence: "N/A"
   }
 ];
 
@@ -37,7 +37,7 @@ function App() {
   // App States
   const [status, setStatus] = useState("Initializing AI Core...");
   const [activeTool, setActiveTool] = useState("none"); 
-  const [diagnosticMode, setDiagnosticMode] = useState(false);
+  const [diagnosticMode, setDiagnosticMode] = useState(true);
   const [activePatient, setActivePatient] = useState(PATIENT_DATABASE[0]);
   
   // Physics States
@@ -46,9 +46,69 @@ function App() {
   const [cursorPos, setCursorPos] = useState({ x: 50, y: 50 }); 
   const [pins, setPins] = useState([]); 
 
+  // === NEW: GEMINI LLM STATES ===
+  const [llmReport, setLlmReport] = useState("");
+  const [isGenerating, setIsGenerating] = useState(false);
+
   const smoothPos = useRef({ x: null, y: null }); 
   const lastPos = useRef(null); 
   const isPinkyDown = useRef(false); 
+
+  // === NEW: GEMINI API CALL ===
+  const generateClinicalReport = async () => {
+    setIsGenerating(true);
+    setLlmReport("");
+    
+    // ⚠️ REPLACE THIS STRING WITH YOUR ACTUAL GEMINI API KEY
+    const apiKey = "AIzaSyBfc0jMwriUmIb2wvNCddeHRpNfHIhANes"
+    
+    // Calculate distance if pins exist
+    let distance = "No manual measurements taken.";
+    if (pins.length === 2) {
+      const rawPixels = Math.sqrt(Math.pow(pins[1].x - pins[0].x, 2) + Math.pow(pins[1].y - pins[0].y, 2));
+      distance = (rawPixels * 2.5).toFixed(1); 
+    }
+    
+    const promptText = `
+      Analyze the following telemetry from the Touchless Radiology Interface:
+      - Patient ID: ${activePatient.id}
+      - Presenting Scan: ${activePatient.name}
+      - CNN Diagnostic Overlay: ${activePatient.hasTumor ? `Detected anomaly with ${activePatient.confidence} confidence.` : "No anomalies detected."}
+      - Surgeon's Manual Measurement: ${distance}${distance !== "No manual measurements taken." ? "mm" : ""}
+      
+      Draft a concise, professional, 3-sentence preliminary radiological findings report based on this data. Address it as a formal medical note.
+    `;
+
+ try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: promptText }] }],
+          systemInstruction: { parts: [{ text: "You are an expert AI Radiologist Assistant. You provide highly technical, professional, and concise clinical summaries." }] }
+        })
+      });
+      
+      const data = await response.json();
+      
+      // NEW: If Google sends an error, print it to the screen so we can see it!
+      if (!response.ok) {
+        console.error("Google API Error:", data);
+        setLlmReport(`Google Error: ${data.error?.message || "Check console"}`);
+        setIsGenerating(false);
+        return;
+      }
+
+      if (data.candidates && data.candidates.length > 0) {
+        setLlmReport(data.candidates[0].content.parts[0].text);
+      } else {
+        setLlmReport("Error: Google returned an empty response.");
+      }
+    } catch (err) {
+      console.error("Network Error:", err);
+      setLlmReport(`Network Error: ${err.message}. Check your internet or CORS.`);
+    }
+  };
 
   useEffect(() => {
     const startSystem = async () => {
@@ -65,7 +125,6 @@ function App() {
                 const video = videoRef.current;
                 
                 if (result !== null) {
-                  // Smoothing Filter
                   if (smoothPos.current.x === null) {
                     smoothPos.current = { x: result.x, y: result.y };
                   } else {
@@ -77,13 +136,11 @@ function App() {
                   const currentY = smoothPos.current.y;
                   const PINCH_THRESHOLD = 0.06; 
                   
-                  // Update virtual crosshair
                   setCursorPos({ x: currentX * 100, y: currentY * 100 });
 
                   let dotColor = "#10B981"; 
                   let currentTool = "none";
 
-                  // TOOL 4: RULER
                   if (result.pinkyDist < PINCH_THRESHOLD) {
                     setStatus("Dropping Measurement Pin...");
                     currentTool = "ruler";
@@ -99,7 +156,6 @@ function App() {
                     isPinkyDown.current = false; 
                   }
 
-                  // TOOL 3: RESET
                   if (result.ringDist < PINCH_THRESHOLD) {
                     setStatus("Resetting Viewport...");
                     currentTool = "reset";
@@ -109,7 +165,6 @@ function App() {
                     setPins([]); 
                     lastPos.current = null;
                   }
-                  // TOOL 1: PAN
                   else if (result.indexDist < PINCH_THRESHOLD && result.middleDist > PINCH_THRESHOLD) {
                     setStatus("Dragging Image...");
                     currentTool = "pan";
@@ -121,7 +176,6 @@ function App() {
                     }
                     lastPos.current = { x: currentX, y: currentY };
                   } 
-                  // TOOL 2: ZOOM
                   else if (result.middleDist < PINCH_THRESHOLD && result.indexDist > PINCH_THRESHOLD) {
                     setStatus("Zooming Image...");
                     currentTool = "zoom";
@@ -132,7 +186,6 @@ function App() {
                     }
                     lastPos.current = { x: currentX, y: currentY };
                   } 
-                  // IDLE
                   else if (result.pinkyDist >= PINCH_THRESHOLD) {
                     setStatus("Tracking: Open Hand");
                     currentTool = "none";
@@ -141,7 +194,6 @@ function App() {
 
                   setActiveTool(currentTool);
 
-                  // === DRAW TRACKING DOTS ===
                   if (canvas && video) {
                     canvas.width = video.videoWidth;
                     canvas.height = video.videoHeight;
@@ -160,8 +212,6 @@ function App() {
                         ctx.lineWidth = 2;
                         ctx.strokeStyle = "rgba(255,255,255,0.8)";          
                         ctx.stroke();
-                        ctx.shadowBlur = 10;
-                        ctx.shadowColor = dotColor;
                       }
                     });
                   }
@@ -183,7 +233,6 @@ function App() {
     startSystem();
   }, []); 
 
-  // --- UI RENDER ---
   const theme = { bg: "#0f172a", panel: "rgba(30, 41, 59, 0.7)", text: "#f8fafc", accent: "#38bdf8", border: "rgba(255, 255, 255, 0.1)" };
 
   const handlePatientChange = (patient) => {
@@ -191,6 +240,7 @@ function App() {
     setPan({ x: 0, y: 0 });
     setZoom(1.5);
     setPins([]);
+    setLlmReport(""); // Clear report on patient change
   };
 
   return (
@@ -208,7 +258,7 @@ function App() {
       <div style={{ display: 'flex', gap: '30px', flex: 1 }}>
         <div style={{ width: '320px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
           
-          <div style={{ backgroundColor: theme.panel, borderRadius: '16px', padding: '15px', border: `1px solid ${theme.border}`, backdropFilter: 'blur(10px)' }}>
+          <div style={{ backgroundColor: theme.panel, borderRadius: '16px', padding: '15px', border: `1px solid ${theme.border}` }}>
             <h3 style={{ margin: '0 0 10px 0', fontSize: '14px', color: '#94a3b8', textTransform: 'uppercase' }}>Select Patient</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {PATIENT_DATABASE.map(patient => (
@@ -229,31 +279,61 @@ function App() {
             </div>
           </div>
 
-          <div style={{ backgroundColor: theme.panel, borderRadius: '16px', padding: '15px', border: `1px solid ${theme.border}`, backdropFilter: 'blur(10px)' }}>
+          <div style={{ backgroundColor: theme.panel, borderRadius: '16px', padding: '15px', border: `1px solid ${theme.border}` }}>
             <h3 style={{ margin: '0 0 10px 0', fontSize: '14px', color: '#94a3b8', textTransform: 'uppercase' }}>Sensor Feed</h3>
             <div style={{ position: 'relative', width: '100%', aspectRatio: '4/3', backgroundColor: 'black', borderRadius: '8px', overflow: 'hidden' }}>
               <video ref={videoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
-             
               <canvas ref={canvasRef} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', transform: 'scaleX(-1)', pointerEvents: 'none' }} />
             </div>
           </div>
 
-          <div style={{ backgroundColor: theme.panel, borderRadius: '16px', padding: '20px', border: `1px solid ${theme.border}`, backdropFilter: 'blur(10px)' }}>
+          <div style={{ backgroundColor: theme.panel, borderRadius: '16px', padding: '20px', border: `1px solid ${theme.border}` }}>
             <button 
               onClick={() => setDiagnosticMode(!diagnosticMode)}
               style={{
                 width: '100%', padding: '12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px', transition: '0.3s',
                 backgroundColor: diagnosticMode ? 'rgba(239, 68, 68, 0.2)' : 'rgba(255, 255, 255, 0.1)',
                 border: `1px solid ${diagnosticMode ? '#EF4444' : theme.border}`, color: diagnosticMode ? '#EF4444' : theme.text,
+                marginBottom: '15px'
               }}
             >
               {diagnosticMode ? '🔴 Disable AI Overlay' : '⚪ Enable AI Assist'}
             </button>
+
+            {/* === NEW: GEMINI BUTTON === */}
+            <button 
+              onClick={generateClinicalReport}
+              disabled={isGenerating}
+              style={{
+                width: '100%', padding: '12px', borderRadius: '8px', cursor: isGenerating ? 'wait' : 'pointer', fontWeight: 'bold', fontSize: '14px', transition: '0.3s',
+                backgroundColor: 'rgba(139, 92, 246, 0.2)', border: '1px solid #8B5CF6', color: '#C4B5FD',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px'
+              }}
+            >
+              ✨ {isGenerating ? 'Analyzing Case...' : 'Generate Clinical Report'}
+            </button>
           </div>
         </div>
 
-        <div style={{ flex: 1, backgroundColor: '#000', borderRadius: '16px', border: `1px solid ${theme.border}`, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-          <DicomViewer pan={pan} zoomLevel={zoom} cursorPos={cursorPos} pins={pins} diagnosticMode={diagnosticMode} activePatient={activePatient} />
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          
+          <div style={{ flex: 1, backgroundColor: '#000', borderRadius: '16px', border: `1px solid ${theme.border}`, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+            <DicomViewer pan={pan} zoomLevel={zoom} cursorPos={cursorPos} pins={pins} diagnosticMode={diagnosticMode} activePatient={activePatient} />
+          </div>
+
+          {/* === NEW: GEMINI OUTPUT PANEL === */}
+          {llmReport && (
+            <div style={{ 
+              backgroundColor: 'rgba(15, 23, 42, 0.9)', border: '1px solid #8B5CF6', borderRadius: '12px', 
+              padding: '20px', color: '#E2E8F0', animation: 'fadeIn 0.5s ease-in-out'
+            }}>
+              <h3 style={{ margin: '0 0 10px 0', fontSize: '14px', color: '#C4B5FD', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                ✨ Gemini Clinical Analysis
+              </h3>
+              <p style={{ margin: 0, lineHeight: '1.6', fontSize: '14px' }}>{llmReport}</p>
+            </div>
+          )}
+
         </div>
       </div>
     </div>
