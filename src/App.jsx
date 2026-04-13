@@ -59,8 +59,7 @@ function App() {
     setIsGenerating(true);
     setLlmReport("");
     
-    // ⚠️ REPLACE THIS STRING WITH YOUR ACTUAL GEMINI API KEY
-    const apiKey = "AIzaSyBfc0jMwriUmIb2wvNCddeHRpNfHIhANes"
+   const apiKey = import.meta.env.VITE_GEMINI_API_KEY; 
     
     // Calculate distance if pins exist
     let distance = "No manual measurements taken.";
@@ -91,7 +90,6 @@ function App() {
       
       const data = await response.json();
       
-      // NEW: If Google sends an error, print it to the screen so we can see it!
       if (!response.ok) {
         console.error("Google API Error:", data);
         setLlmReport(`Google Error: ${data.error?.message || "Check console"}`);
@@ -300,7 +298,6 @@ function App() {
               {diagnosticMode ? '🔴 Disable AI Overlay' : '⚪ Enable AI Assist'}
             </button>
 
-            {/* === NEW: GEMINI BUTTON === */}
             <button 
               onClick={generateClinicalReport}
               disabled={isGenerating}
@@ -321,8 +318,7 @@ function App() {
             <DicomViewer pan={pan} zoomLevel={zoom} cursorPos={cursorPos} pins={pins} diagnosticMode={diagnosticMode} activePatient={activePatient} />
           </div>
 
-          {/* === NEW: GEMINI OUTPUT PANEL === */}
-          {llmReport && (
+           {llmReport && (
             <div style={{ 
               backgroundColor: 'rgba(15, 23, 42, 0.9)', border: '1px solid #8B5CF6', borderRadius: '12px', 
               padding: '20px', color: '#E2E8F0', animation: 'fadeIn 0.5s ease-in-out'
